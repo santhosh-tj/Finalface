@@ -1,0 +1,8 @@
+{
+  "name": "face-attendance-backend",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "python run.py",
+    "start": "python run.py"
+  }
+}
