@@ -203,8 +203,8 @@ Temporary Items
 # Face Recognition Models & Data
 # =========================
 # Face encodings and models
-models/
-face_encodings/
+# models/
+# face_encodings/
 *.pkl
 *.joblib
 *.h5
