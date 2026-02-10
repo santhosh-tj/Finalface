@@ -1,127 +1,187 @@
-import numpy as np
-import cv2
-from deepface import DeepFace
 import logging
+from typing import Dict, Optional, Tuple
+
+import cv2
+import numpy as np
+from deepface import DeepFace
 import tensorflow as tf
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+MODEL_NAME = "Facenet512"
+
 
 class FaceRecognitionService:
     """
-    Singleton Service for Face Recognition (Multi-Model: FaceNet512 + ArcFace).
-    Loads models ONCE at startup to prevent memory leaks and slow requests.
+    OpenCV + FaceNet service.
+    - Detects face using OpenCV Haar Cascade
+    - Generates FaceNet512 embeddings from cropped face
+    - Returns quality metrics for registration gating
     """
+
     _instance = None
-    _models = {}
 
     def __new__(cls):
         if cls._instance is None:
-            logger.info("🌌 [ANTIGRAVITY] Initializing Multi-Model Face Recognition Core...")
             cls._instance = super(FaceRecognitionService, cls).__new__(cls)
-            cls._instance._initialize_models()
+            cls._instance._initialize()
         return cls._instance
 
-    def _initialize_models(self):
-        """
-        Loads FaceNet512 and ArcFace models into memory.
-        """
+    def _initialize(self):
+        tf.config.run_functions_eagerly(True)
+        self.model = DeepFace.build_model(MODEL_NAME)
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        logger.info("FaceRecognitionService initialized with OpenCV + Facenet512")
+
+    def _decode_image(self, img_array: np.ndarray) -> Optional[np.ndarray]:
+        if img_array is None:
+            return None
+        if isinstance(img_array, np.ndarray):
+            return img_array
+        return None
+
+    def _detect_largest_face(self, img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.2,
+            minNeighbors=6,
+            minSize=(80, 80),
+        )
+        if len(faces) == 0:
+            return None
+        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+        return int(x), int(y), int(w), int(h)
+
+    def _crop_with_padding(self, img: np.ndarray, bbox: Tuple[int, int, int, int], pad_ratio: float = 0.22):
+        x, y, w, h = bbox
+        ih, iw = img.shape[:2]
+        pad = int(max(w, h) * pad_ratio)
+        x1 = max(0, x - pad)
+        y1 = max(0, y - pad)
+        x2 = min(iw, x + w + pad)
+        y2 = min(ih, y + h + pad)
+        return img[y1:y2, x1:x2]
+
+    def _frame_quality(self, img: np.ndarray, bbox: Tuple[int, int, int, int]) -> Dict:
+        x, y, w, h = bbox
+        ih, iw = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        brightness = float(gray.mean())
+        blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        face_ratio = float((w * h) / max(1, iw * ih))
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        center_offset = float(
+            np.sqrt(((cx - iw / 2.0) / max(1, iw / 2.0)) ** 2 + ((cy - ih / 2.0) / max(1, ih / 2.0)) ** 2)
+        )
+
+        reasons = []
+        if brightness < 55:
+            reasons.append("too_dark")
+        if brightness > 210:
+            reasons.append("too_bright")
+        if blur < 80:
+            reasons.append("blurry")
+        if face_ratio < 0.08:
+            reasons.append("face_too_small")
+        if face_ratio > 0.65:
+            reasons.append("face_too_close")
+        if center_offset > 0.55:
+            reasons.append("face_not_centered")
+
+        guidance = "good_frame"
+        if reasons:
+            if "too_dark" in reasons:
+                guidance = "increase_light"
+            elif "too_bright" in reasons:
+                guidance = "reduce_light"
+            elif "blurry" in reasons:
+                guidance = "hold_camera_steady"
+            elif "face_too_small" in reasons:
+                guidance = "move_closer"
+            elif "face_too_close" in reasons:
+                guidance = "move_back"
+            else:
+                guidance = "center_face"
+
+        return {
+            "accepted": len(reasons) == 0,
+            "reasons": reasons,
+            "guidance": guidance,
+            "brightness": round(brightness, 2),
+            "blur": round(blur, 2),
+            "faceRatio": round(face_ratio, 4),
+            "centerOffset": round(center_offset, 4),
+        }
+
+    def _embed_face(self, face_img: np.ndarray) -> Optional[np.ndarray]:
         try:
-            # Force eager execution to avoid graph issues
-            tf.config.run_functions_eagerly(True)
-            
-            model_names = ["Facenet512", "ArcFace"]
-            
-            for name in model_names:
-                logger.info(f"🔄 Attempting to load model: {name}") 
-                self._models[name] = DeepFace.build_model(name)
-                logger.info(f"✅ {name} Loaded.")
+            try:
+                result = DeepFace.represent(
+                    img_path=face_img,
+                    model_name=MODEL_NAME,
+                    model=self.model,
+                    enforce_detection=False,
+                    detector_backend="skip",
+                )
+            except TypeError:
+                result = DeepFace.represent(
+                    img_path=face_img,
+                    model_name=MODEL_NAME,
+                    enforce_detection=False,
+                    detector_backend="skip",
+                )
 
-            logger.info("🚀 [ANTIGRAVITY] Multi-Model Core Ready.")
-        except Exception as e:
-            logger.error(f"❌ [CRITICAL] Failed to load models: {e}")
-            raise RuntimeError("ML Engine Failure") from e
-
-    def generate_embedding(self, img_array):
-        """
-        Generates embeddings for a given face image using all loaded models.
-        Args:
-            img_array (numpy array): BGR image from OpenCV
-        Returns:
-            dict: { "Facenet512": [vector], "ArcFace": [vector] } or None if no face found
-        """
-        try:
-            if img_array is None or img_array.size == 0:
-                logger.warning("⚠️ Empty image buffer received.")
+            if not result:
                 return None
 
-            embeddings = {}
-            found_face = False
-
-            # Load Haar Cascade (standard OpenCV)
-            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-            
-            # Convert to grayscale for detection
-            gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
-            
-            # Detect faces (using parameters from user script: scaleFactor=1.3, minNeighbors=5)
-            # This is key: we use strict parameters to avoid false positives, but loose enough for basic webcams
-            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-            
-            if len(faces) == 0:
-                logger.info("❌ No face detected by Haar Cascade")
+            embedding = result[0]["embedding"] if isinstance(result, list) else result["embedding"]
+            vector = np.array(embedding, dtype=np.float32)
+            norm = np.linalg.norm(vector)
+            if norm <= 1e-9:
                 return None
-                
-            # Take the largest face
-            (x, y, w, h) = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
-            face_bbox = {'x': int(x), 'y': int(y), 'w': int(w), 'h': int(h)}
-            logger.info(f"📍 Face detected at: {face_bbox}")
-            
-            # Crop the face
-            # DeepFace expects BGR, so we crop from original img_array
-            face_img = img_array[y:y+h, x:x+w]
-
-            for model_name, model_obj in self._models.items():
-                try:
-                    # Pass the *cropped* face to DeepFace
-                    # We disable detection since we already found it
-                    result = DeepFace.represent(
-                        img_path=face_img,
-                        model_name=model_name,
-                        model=model_obj, # Pass model object for efficiency (if supported by installed version)
-                        enforce_detection=False, 
-                        detector_backend="skip" # Skip detection inside DeepFace
-                    )
-                    
-                    if result:
-                        embeddings[model_name] = result[0]["embedding"]
-                        found_face = True
-                            
-                except TypeError:
-                     # Fallback for old DeepFace versions that don't accept 'model' arg
-                     result = DeepFace.represent(
-                        img_path=face_img,
-                        model_name=model_name,
-                        enforce_detection=False,
-                        detector_backend="skip"
-                    )
-                     if result:
-                        embeddings[model_name] = result[0]["embedding"]
-                        found_face = True
-
-                except Exception as ex:
-                     logger.warning(f"⚠️ Failed to generate {model_name} embedding: {ex}")
-
-            if not found_face:
-                return None
-
-            # Return both embeddings and bbox
-            return {"embeddings": embeddings, "bbox": face_bbox}
-
-        except Exception as e:
-            logger.error(f"⚠️ Embedding Generation Error: {e}")
+            return vector / norm
+        except Exception as ex:
+            logger.warning("Embedding generation failed: %s", ex)
             return None
 
-# Global Instance
+    def generate_embedding(self, img_array: np.ndarray) -> Optional[Dict]:
+        """
+        Returns:
+        {
+          "embeddings": { "Facenet512": [float...] },
+          "bbox": {"x":int,"y":int,"w":int,"h":int},
+          "quality": {...}
+        }
+        """
+        try:
+            img = self._decode_image(img_array)
+            if img is None or img.size == 0:
+                return None
+
+            bbox = self._detect_largest_face(img)
+            if bbox is None:
+                return None
+
+            quality = self._frame_quality(img, bbox)
+            face_img = self._crop_with_padding(img, bbox)
+            embedding = self._embed_face(face_img)
+            if embedding is None:
+                return None
+
+            x, y, w, h = bbox
+            return {
+                "embeddings": {MODEL_NAME: embedding.tolist()},
+                "bbox": {"x": x, "y": y, "w": w, "h": h},
+                "quality": quality,
+            }
+        except Exception as ex:
+            logger.error("generate_embedding failed: %s", ex)
+            return None
+
+
 ml_service = FaceRecognitionService()

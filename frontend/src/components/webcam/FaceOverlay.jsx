@@ -3,9 +3,13 @@ export function FaceOverlay({ faces }) {
   return (
     <div className="absolute inset-0 pointer-events-none">
       {faces.map((f, i) => {
+        const isFake = f.status === "fake" || f.liveness === "fake";
         const isUnknown = f.status === "unknown";
         const isRecognizing = f.status === "recognizing";
-        const color = isUnknown ? "#ef4444" : isRecognizing ? "#eab308" : "#22c55e"; // Red, Yellow, Green
+        const color = isFake ? "#ef4444" : isUnknown ? "#f97316" : isRecognizing ? "#eab308" : "#22c55e";
+        const topLabel = f.name
+          ? `${f.name}-${f.liveness || (isFake ? "fake" : "real")}`
+          : (isUnknown ? "Unknown" : "Scanning...");
         
         return (
           <div
@@ -30,7 +34,7 @@ export function FaceOverlay({ faces }) {
                 className="px-2 py-0.5 rounded-t text-white text-sm font-bold"
                 style={{ backgroundColor: color }}
               >
-                {f.name || (isUnknown ? "Unknown" : "Scanning...")}
+                {topLabel}
               </span>
               
               {/* ID / Roll No */}
@@ -60,6 +64,11 @@ export function FaceOverlay({ faces }) {
                 {f.status === "already" && (
                   <span className="text-[10px] font-bold text-amber-600 bg-white px-1.5 py-0.5 rounded shadow-sm">
                     ALREADY MARKED
+                  </span>
+                )}
+                {isFake && (
+                  <span className="text-[10px] font-bold text-red-600 bg-white px-1.5 py-0.5 rounded shadow-sm">
+                    FAKE
                   </span>
                 )}
               </div>

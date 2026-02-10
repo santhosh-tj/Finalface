@@ -1,23 +1,23 @@
 import React, { useRef, useState, useEffect } from 'react';
-import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Scan, User, CheckCircle, AlertTriangle, Disc, Target } from 'lucide-react';
+import { Scan, Target } from 'lucide-react';
+import { api } from '../api/client';
 import './FaceCaptureComponent.css';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-
-const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
+const FaceCaptureComponent = ({ onComplete, onError, numImages = 20 }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [sessionId, setSessionId] = useState(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(numImages);
+  const [minRequired, setMinRequired] = useState(Math.max(6, Math.ceil(numImages * 0.5)));
   const [message, setMessage] = useState('');
   const [faceDetected, setFaceDetected] = useState(false);
   const [bbox, setBbox] = useState(null);
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
+  const completingRef = useRef(false);
 
   useEffect(() => {
     startCamera();
@@ -56,15 +56,13 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
   const startRegistration = async () => {
     try {
       setMessage('Initializing registration...');
-      const token = localStorage.getItem('token');
-      const response = await axios.post(`${API_URL}/face/register/start`, { numImages }, {
-          headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await api.post('/face/register/start', { numImages });
 
       if (response.data.success) {
         const newSessionId = response.data.sessionId;
         setSessionId(newSessionId);
         setTotal(response.data.numImages);
+        setMinRequired(Math.max(6, Math.ceil(response.data.numImages * 0.5)));
         setIsCapturing(true);
         setMessage('ALIGN FACE FOR SCAN');
         startCaptureLoop(newSessionId);
@@ -97,19 +95,19 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
 
     canvas.toBlob(async (blob) => {
       if (!blob) return;
+      if (completingRef.current) return;
 
       try {
         const formData = new FormData();
         formData.append('image', blob, 'frame.jpg');
         formData.append('sessionId', currentSessionId);
         
-        const response = await axios.post(`${API_URL}/face/register/frame`, formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
-        });
+        const response = await api.post('/face/register/frame', formData);
 
         if (response.data.success) {
           setProgress(response.data.progress);
           setTotal(response.data.total);
+          if (response.data.minRequired) setMinRequired(response.data.minRequired);
           setFaceDetected(true);
           setBbox(response.data.bbox);
           setMessage(`SCANNING: ${Math.round((response.data.progress / response.data.total) * 100)}% COMPLETE`);
@@ -120,9 +118,39 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
         } else {
           setFaceDetected(false);
           setBbox(null);
+          if (response.data.guidance) {
+            const guidance = String(response.data.guidance).replaceAll('_', ' ').toUpperCase();
+            setMessage(guidance);
+          }
         }
       } catch (error) {
         console.error('Error capturing frame:', error);
+        const apiError = error?.response?.data?.error || '';
+        const reason = error?.response?.data?.reason || '';
+
+        if (reason === 'invalid_session' || /session/i.test(apiError)) {
+          setMessage('SESSION LOST. RESTARTING...');
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+          setIsCapturing(false);
+          setSessionId(null);
+          setProgress(0);
+          setFaceDetected(false);
+          setBbox(null);
+
+          setTimeout(() => {
+            startRegistration();
+          }, 500);
+          return;
+        }
+
+        if (apiError) {
+          setMessage(apiError.toUpperCase());
+        } else {
+          setMessage('FRAME CAPTURE ERROR');
+        }
       }
     }, 'image/jpeg', 0.95);
   };
@@ -130,8 +158,10 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
   const completeRegistration = async (activeSessionId) => {
     const finalSessionId = activeSessionId || sessionId;
     if (!finalSessionId) return;
+    if (completingRef.current) return;
     
     try {
+      completingRef.current = true;
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -139,7 +169,7 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
       setIsCapturing(false);
       setMessage('COMPILING BIOMETRIC DATA...');
 
-      const response = await axios.post(`${API_URL}/face/register/complete`, { sessionId: finalSessionId });
+      const response = await api.post('/face/register/complete', { sessionId: finalSessionId });
 
       if (response.data.success) {
         setMessage('REGISTRATION SUCCESSFUL');
@@ -153,6 +183,8 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
       console.error('Error completing registration:', error);
       setMessage('Error: Failed to complete registration');
       if (onError) onError(error);
+    } finally {
+      completingRef.current = false;
     }
   };
 
@@ -162,6 +194,7 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
     setSessionId(null);
     setProgress(0);
     setMessage('REGISTRATION ABORTED');
+    completingRef.current = false;
   };
 
   // --- Render ---
@@ -275,12 +308,22 @@ const FaceCaptureComponent = ({ onComplete, onError, numImages = 50 }) => {
              )}
              
              {isCapturing && (
-                 <button 
-                   onClick={cancelRegistration}
-                   className="px-6 py-2 border border-red-500/50 text-red-500 hover:bg-red-500/10 rounded-lg text-sm font-bold tracking-wider"
-                 >
-                     ABORT SEQUENCE
-                 </button>
+                 <div className="flex items-center gap-3">
+                   {progress >= minRequired && (
+                     <button
+                       onClick={() => completeRegistration(sessionId)}
+                       className="px-6 py-2 bg-emerald-500/90 hover:bg-emerald-400 text-black rounded-lg text-sm font-bold tracking-wider"
+                     >
+                       FINISH REGISTRATION
+                     </button>
+                   )}
+                   <button 
+                     onClick={cancelRegistration}
+                     className="px-6 py-2 border border-red-500/50 text-red-500 hover:bg-red-500/10 rounded-lg text-sm font-bold tracking-wider"
+                   >
+                       ABORT SEQUENCE
+                   </button>
+                 </div>
              )}
         </div>
     </div>

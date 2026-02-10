@@ -28,6 +28,25 @@ export function LiveAttendancePage() {
   const [hudStatus, setHudStatus] = useState('scanning'); // scanning, detecting, match, unknown
   const [lastMatchedUser, setLastMatchedUser] = useState(null);
   const intervalRef = useRef(null);
+  const lastOverlayAtRef = useRef(0);
+  const OVERLAY_HOLD_MS = 2500;
+
+  const mapBboxToOverlay = useCallback((bbox) => {
+    if (!bbox) return null;
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return null;
+
+    const rect = video.getBoundingClientRect();
+    const sx = rect.width / video.videoWidth;
+    const sy = rect.height / video.videoHeight;
+
+    return {
+      x: (video.videoWidth - (bbox.x + bbox.w)) * sx,
+      y: bbox.y * sy,
+      width: bbox.w * sx,
+      height: bbox.h * sy,
+    };
+  }, []);
 
   // Load Session Logic
   const loadSession = useCallback(() => {
@@ -54,24 +73,24 @@ export function LiveAttendancePage() {
         image: base64, sessionId, autoMark: true,
       });
 
-      setOverlayFaces(prev => prev.filter(f => f.status !== 'recognizing'));
-
       if (data.matched && data.user) {
-        setHudStatus('match');
+        const liveness = data.livenessStatus === "fake" ? "fake" : "real";
+        setHudStatus(liveness === "fake" ? "unknown" : "match");
         setLastMatchedUser(data.user.name);
-        
-        // Simple scaling - assuming standard webcam aspect
-        // In a real optimized app, we'd do precise coordinate mapping as shown previously
-        // keeping it simpler here for the HUD effect focus
-        
-        setOverlayFaces(prev => [...prev, {
+        const mapped = mapBboxToOverlay(data.bbox);
+        if (mapped) {
+          lastOverlayAtRef.current = Date.now();
+          setOverlayFaces([{
             name: data.user.name,
             id: data.user.rollNo,
-            status: data.alreadyMarked ? 'already' : 'marked',
+            liveness,
+            status: liveness === "fake" ? "fake" : (data.alreadyMarked ? "already" : "marked"),
             emotion: data.emotion,
-            // Mock coordinates for the simple overlay if needed, usually managed by HUD now
-             x: 100, y: 100, width: 200, height: 200 
-        }]);
+            ...mapped,
+          }]);
+        } else if (Date.now() - lastOverlayAtRef.current > OVERLAY_HOLD_MS) {
+          setOverlayFaces([]);
+        }
 
         if (data.attendanceMarked) {
           setPresentCount(c => c + 1);
@@ -84,6 +103,19 @@ export function LiveAttendancePage() {
         }, 2000);
       } else {
         setHudStatus(data.faces_detected > 0 ? 'unknown' : 'scanning');
+        const mapped = mapBboxToOverlay(data.bbox);
+        if (mapped) {
+          lastOverlayAtRef.current = Date.now();
+          setOverlayFaces([{
+            name: "",
+            id: "",
+            status: "unknown",
+            liveness: "unknown",
+            ...mapped,
+          }]);
+        } else if (Date.now() - lastOverlayAtRef.current > OVERLAY_HOLD_MS) {
+          setOverlayFaces([]);
+        }
         if(data.faces_detected > 0) {
              setTimeout(() => setHudStatus('scanning'), 1000);
         }
@@ -91,10 +123,13 @@ export function LiveAttendancePage() {
     } catch (e) {
       console.error(e);
       setHudStatus('scanning');
+      if (Date.now() - lastOverlayAtRef.current > OVERLAY_HOLD_MS) {
+        setOverlayFaces([]);
+      }
     } finally {
       setScanning(false);
     }
-  }, [sessionId, captureBase64, scanning, ended]);
+  }, [sessionId, captureBase64, scanning, ended, mapBboxToOverlay]);
 
   // Timers and Cleanup
   useEffect(() => {
@@ -155,6 +190,7 @@ export function LiveAttendancePage() {
                    <>
                         <WebcamFeed videoRef={videoRef} className="absolute inset-0 w-full h-full object-cover" />
                         <WebcamHUD status={hudStatus} activeUser={lastMatchedUser} />
+                        <FaceOverlay faces={overlayFaces} />
                         
                         {/* Error/Loading States */}
                         {webcamError && <div className="absolute inset-0 bg-red-900/50 flex items-center justify-center">{webcamError}</div>}

@@ -1,156 +1,193 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
+import { AlertCircle, Camera, CheckCircle2, Shield, SunMedium, UserCheck } from "lucide-react";
 import { Sidebar } from "../../components/layout/Sidebar";
 import { Header } from "../../components/layout/Header";
 import { Card } from "../../components/common/Card";
-import { useAuth } from "../../contexts/AuthContext";
 import FaceCaptureComponent from "../../components/FaceCaptureComponent";
-import { CheckCircle, Moon, Sun, Camera, Shield, UserCheck, AlertCircle } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { studentApi } from "../../api/client";
+import { useAuth } from "../../contexts/AuthContext";
+
+const tips = [
+  "Keep your face centered inside the frame.",
+  "Use even lighting and avoid strong backlight.",
+  "Remove masks and dark glasses during capture.",
+  "Slowly turn your head for multiple angles.",
+];
 
 export function RegisterFacePage() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
-  const [isDarkMode, setIsDarkMode] = useState(true); // Toggle state
+  const [profile, setProfile] = useState(null);
   const navigate = useNavigate();
   const { user, updateUser } = useAuth();
 
   useEffect(() => {
-    if (user?.faceRegistered) {
-      navigate("/student");
+    let mounted = true;
+    async function loadProfile() {
+      setLoading(true);
+      setError("");
+      try {
+        const { data } = await studentApi.me();
+        if (!mounted) return;
+        const fresh = data?.user || null;
+        setProfile(fresh);
+        if (fresh) updateUser({ ...(user || {}), ...fresh });
+        if (fresh?.faceRegistered) navigate("/student", { replace: true });
+      } catch (e) {
+        if (!mounted) return;
+        setError(e?.response?.data?.error || "Unable to load your profile.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
     }
-  }, [user?.faceRegistered, navigate]);
 
-  const handleComplete = (data) => {
-    console.log("Registration completed:", data);
-    setSuccess(true);
-    updateUser({ ...user, faceRegistered: true });
-    setTimeout(() => navigate("/student"), 2500);
+    loadProfile();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleComplete = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const { data } = await studentApi.me();
+      const fresh = data?.user || {};
+      setProfile(fresh);
+      updateUser({ ...(user || {}), ...fresh, faceRegistered: true });
+      setSuccess(true);
+      setTimeout(() => navigate("/student", { replace: true }), 1800);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Face registered, but failed to refresh profile.");
+      setSuccess(true);
+      setTimeout(() => navigate("/student", { replace: true }), 1800);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleError = (err) => {
-    console.error("Registration error:", err);
-    const errorMessage = err.response?.data?.error || 
-                        err.message || 
-                        "Registration failed. Please try again.";
-    setError(errorMessage);
-  };
-
-  const toggleTheme = () => setIsDarkMode(!isDarkMode);
-
-  if (user?.faceRegistered) return null;
-
-  // Dynamic Styles based on Theme
-  const theme = {
-    bg: isDarkMode ? "bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900" : "bg-gradient-to-br from-blue-50 via-white to-blue-50",
-    text: isDarkMode ? "text-white" : "text-gray-900",
-    textMuted: isDarkMode ? "text-gray-300" : "text-gray-600",
-    cardBg: isDarkMode ? "bg-black/40 backdrop-blur-xl border-white/10" : "bg-white/70 backdrop-blur-xl border-gray-200 shadow-xl",
-    instructionBg: isDarkMode ? "bg-purple-500/10 border-purple-500/30" : "bg-blue-50 border-blue-100",
-    iconColor: isDarkMode ? "text-green-400" : "text-green-600",
+    setSaving(false);
+    setError(
+      err?.response?.data?.error ||
+        err?.message ||
+        "Registration failed. Please try again."
+    );
   };
 
   return (
-    <div className={`flex min-h-screen ${theme.bg} transition-colors duration-500`}>
+    <div className="flex min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(56,189,248,0.15),transparent_45%),radial-gradient(circle_at_bottom_left,_rgba(99,102,241,0.15),transparent_40%)] bg-slate-50 dark:bg-slate-950">
       <Sidebar />
-      <main className="flex-1 flex flex-col relative overflow-hidden">
-        {/* Toggle Theme Button */}
-        <button 
-            onClick={toggleTheme}
-            className={`absolute top-6 right-6 z-50 p-2 rounded-full ${isDarkMode ? "bg-white/10 text-yellow-300 hover:bg-white/20" : "bg-gray-200 text-gray-700 hover:bg-gray-300"} transition-all`}
-        >
-            {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-        </button>
-
-        <Header 
-          title="Face Registration"
-          subtitle="Secure your account with biometric data" 
+      <main className="flex-1 flex flex-col">
+        <Header
+          title="Register Face"
+          subtitle="Capture your biometric profile for fast attendance verification."
         />
-        
-        <div className="p-6 flex-1 flex items-center justify-center">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className={`w-full max-w-5xl p-8 rounded-2xl border ${theme.cardBg} ${theme.text} shadow-2xl`}
-          >
-            {success ? (
-              <div className="text-center py-16">
-                <motion.div 
-                    initial={{ scale: 0 }} animate={{ scale: 1 }} 
-                    className="w-24 h-24 mx-auto bg-green-500 rounded-full flex items-center justify-center mb-6 shadow-lg shadow-green-500/30"
-                >
-                  <CheckCircle size={48} className="text-white" />
-                </motion.div>
-                <h2 className={`text-3xl font-bold mb-3 ${isDarkMode ? "text-white" : "text-gray-800"}`}>
-                  Registration Complete!
-                </h2>
-                <p className={`${theme.textMuted} text-lg`}>
-                  Your face biometric data has been securely verified.
-                </p>
-                <p className="text-sm text-gray-400 mt-4 animate-pulse">Redirecting to dashboard...</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-                {/* Left: Instructions */}
-                <div className="space-y-6">
-                    <div className="flex items-center gap-3 mb-2">
-                        <div className={`p-3 rounded-lg ${isDarkMode ? "bg-purple-500/20 text-purple-400" : "bg-blue-100 text-blue-600"}`}>
-                            <Shield size={28} />
-                        </div>
-                        <h3 className={`text-2xl font-bold ${isDarkMode ? "text-white" : "text-gray-800"}`}>
-                           Setup Guide
-                        </h3>
+
+        <div className="p-6 md:p-8 max-w-7xl mx-auto w-full">
+          {loading ? (
+            <div className="h-64 grid place-items-center">
+              <div className="h-10 w-10 rounded-full border-4 border-cyan-500/25 border-t-cyan-500 animate-spin" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+              <motion.section
+                initial={{ opacity: 0, x: -12 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="xl:col-span-2 space-y-6"
+              >
+                <Card className="border border-gray-200 dark:border-white/10">
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-xl p-2 bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300">
+                      <Shield size={20} />
                     </div>
+                    <div>
+                      <p className="font-semibold text-gray-900 dark:text-white">Biometric Setup</p>
+                      <p className="text-sm mt-1 text-gray-600 dark:text-gray-400">
+                        We capture about 20 frames to build a stable face embedding quickly.
+                      </p>
+                    </div>
+                  </div>
+                </Card>
 
-                  <p className={`${theme.textMuted} leading-relaxed`}>
-                    We need to capture **50 high-quality images** to build your unique face profile. This ensures quick and accurate attendance marking.
-                  </p>
-
-                  <div className={`p-6 rounded-xl border ${theme.instructionBg} space-y-4`}>
-                    {[
-                        { icon: UserCheck, text: "Center your face in the frame" },
-                        { icon: Sun, text: "Ensure balanced lighting (no strong shadows)" },
-                        { icon: AlertCircle, text: "Remove masks or dark glasses" },
-                        { icon: Camera, text: "Slightly rotate head for better angles" }
-                    ].map((item, idx) => (
-                        <div key={idx} className="flex items-center gap-4">
-                            <item.icon size={20} className={theme.iconColor} />
-                            <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
-                                {item.text}
-                            </span>
-                        </div>
+                <Card className="border border-gray-200 dark:border-white/10">
+                  <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Capture Checklist</h3>
+                  <div className="space-y-3">
+                    {tips.map((tip) => (
+                      <div key={tip} className="flex items-start gap-3">
+                        <UserCheck size={16} className="mt-0.5 text-emerald-600 dark:text-emerald-300" />
+                        <p className="text-sm text-gray-700 dark:text-gray-300">{tip}</p>
+                      </div>
                     ))}
                   </div>
+                </Card>
 
-                  {error && (
-                    <motion.div 
-                        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                        className="p-4 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl flex items-center gap-3"
-                    >
-                      <AlertCircle size={20} />
-                      <span className="text-sm font-semibold">{error}</span>
-                    </motion.div>
-                  )}
-                </div>
+                <Card className="border border-gray-200 dark:border-white/10">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Current status</p>
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                      <SunMedium size={12} />
+                      {profile?.faceRegistered ? "Registered" : "Not registered"}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm text-gray-700 dark:text-gray-300">
+                    After completion, you will be redirected to dashboard automatically.
+                  </p>
+                </Card>
+              </motion.section>
 
-                {/* Right: Camera */}
-                <div className="relative rounded-2xl overflow-hidden bg-black shadow-2xl border border-gray-800">
-                    <FaceCaptureComponent
-                        numImages={50}
-                        onComplete={handleComplete}
-                        onError={handleError}
-                    />
-                    
-                    {/* Overlay Tip */}
-                    <div className="absolute bottom-4 left-0 right-0 text-center pointer-events-none">
-                        <span className="px-4 py-2 bg-black/60 backdrop-blur-md rounded-full text-xs text-white/80 font-medium border border-white/10">
-                            Looking good! Hold steady.
-                        </span>
+              <motion.section
+                initial={{ opacity: 0, x: 12 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="xl:col-span-3"
+              >
+                <Card className="border border-gray-200 dark:border-white/10 p-4 md:p-5">
+                  {success ? (
+                    <div className="h-[520px] grid place-items-center text-center">
+                      <div>
+                        <div className="mx-auto mb-4 h-16 w-16 rounded-full bg-emerald-100 dark:bg-emerald-500/20 grid place-items-center">
+                          <CheckCircle2 size={34} className="text-emerald-600 dark:text-emerald-300" />
+                        </div>
+                        <p className="text-2xl font-bold text-gray-900 dark:text-white">Registration Complete</p>
+                        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                          Your face profile has been saved. Redirecting to dashboard.
+                        </p>
+                      </div>
                     </div>
-                </div>
-              </div>
-            )}
-          </motion.div>
+                  ) : (
+                    <>
+                      {error && (
+                        <div className="mb-4 rounded-xl border border-red-300/70 dark:border-red-500/30 bg-red-50 dark:bg-red-950/30 px-3 py-2 flex items-center gap-2">
+                          <AlertCircle size={16} className="text-red-600 dark:text-red-300" />
+                          <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
+                        </div>
+                      )}
+
+                      <div className="mb-4 flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                        <Camera size={16} />
+                        Keep your camera stable while scanning is in progress.
+                      </div>
+
+                      <div className="h-[520px] rounded-2xl overflow-hidden border border-gray-200 dark:border-white/10 bg-black">
+                        <FaceCaptureComponent
+                          numImages={20}
+                          onComplete={handleComplete}
+                          onError={handleError}
+                        />
+                      </div>
+                      {saving && (
+                        <p className="mt-3 text-sm text-cyan-700 dark:text-cyan-300">Finalizing and syncing profile...</p>
+                      )}
+                    </>
+                  )}
+                </Card>
+              </motion.section>
+            </div>
+          )}
         </div>
       </main>
     </div>
